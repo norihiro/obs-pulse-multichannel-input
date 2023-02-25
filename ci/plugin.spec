@@ -7,6 +7,7 @@ License: GPLv2+
 Source0: %{name}-%{version}.tar.bz2
 BuildRequires: cmake, gcc, gcc-c++
 BuildRequires: obs-studio-devel
+BuildRequires: pulseaudio-libs-devel
 
 %description
 This plugin for OBS Studio provides a modified PulseAudio input.
