@@ -1,0 +1,15 @@
+*~
+.*.swp
+.DS_Store
+/build/
+/build32/
+/build64/
+/release/
+/installer/Output/
+
+tags
+.vscode
+.idea
+
+# ignore generated files
+*.generated.*
