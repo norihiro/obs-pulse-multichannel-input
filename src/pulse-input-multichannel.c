@@ -37,13 +37,13 @@ struct pulse_data {
 	char *device;
 	bool is_default;
 	bool input;
+	pa_channel_map channel_map;
 
 	/* server info */
 	enum speaker_layout speakers;
 	pa_sample_format_t format;
 	uint_fast32_t samples_per_sec;
 	uint_fast32_t bytes_per_frame;
-	uint_fast8_t channels;
 	uint64_t first_ts;
 
 	/* statistics */
@@ -105,61 +105,6 @@ pulse_channels_to_obs_speakers(uint_fast32_t channels)
 	}
 
 	return SPEAKERS_UNKNOWN;
-}
-
-static pa_channel_map pulse_channel_map(enum speaker_layout layout)
-{
-	pa_channel_map ret;
-
-	ret.map[0] = PA_CHANNEL_POSITION_FRONT_LEFT;
-	ret.map[1] = PA_CHANNEL_POSITION_FRONT_RIGHT;
-	ret.map[2] = PA_CHANNEL_POSITION_FRONT_CENTER;
-	ret.map[3] = PA_CHANNEL_POSITION_LFE;
-	ret.map[4] = PA_CHANNEL_POSITION_REAR_LEFT;
-	ret.map[5] = PA_CHANNEL_POSITION_REAR_RIGHT;
-	ret.map[6] = PA_CHANNEL_POSITION_SIDE_LEFT;
-	ret.map[7] = PA_CHANNEL_POSITION_SIDE_RIGHT;
-
-	switch (layout) {
-	case SPEAKERS_MONO:
-		ret.channels = 1;
-		ret.map[0] = PA_CHANNEL_POSITION_MONO;
-		break;
-
-	case SPEAKERS_STEREO:
-		ret.channels = 2;
-		break;
-
-	case SPEAKERS_2POINT1:
-		ret.channels = 3;
-		ret.map[2] = PA_CHANNEL_POSITION_LFE;
-		break;
-
-	case SPEAKERS_4POINT0:
-		ret.channels = 4;
-		ret.map[3] = PA_CHANNEL_POSITION_REAR_CENTER;
-		break;
-
-	case SPEAKERS_4POINT1:
-		ret.channels = 5;
-		ret.map[4] = PA_CHANNEL_POSITION_REAR_CENTER;
-		break;
-
-	case SPEAKERS_5POINT1:
-		ret.channels = 6;
-		break;
-
-	case SPEAKERS_7POINT1:
-		ret.channels = 8;
-		break;
-
-	case SPEAKERS_UNKNOWN:
-	default:
-		ret.channels = 0;
-		break;
-	}
-
-	return ret;
 }
 
 static inline uint64_t samples_to_ns(size_t frames, uint_fast32_t rate)
@@ -299,19 +244,8 @@ static void pulse_source_info(pa_context *c, const pa_source_info *i, int eol,
 		     pa_sample_format_to_string(format));
 	}
 
-	uint8_t channels = i->sample_spec.channels;
-	if (pulse_channels_to_obs_speakers(channels) == SPEAKERS_UNKNOWN) {
-		channels = 2;
-
-		blog(LOG_INFO,
-		     "%c channels not supported by OBS,"
-		     "using %c instead for recording",
-		     i->sample_spec.channels, channels);
-	}
-
 	data->format = format;
 	data->samples_per_sec = i->sample_spec.rate;
-	data->channels = channels;
 
 skip:
 	pulse_signal(0);
@@ -348,20 +282,19 @@ static int_fast32_t pulse_start_recording(struct pulse_data *data)
 	pa_sample_spec spec;
 	spec.format = data->format;
 	spec.rate = data->samples_per_sec;
-	spec.channels = data->channels;
+	spec.channels = data->channel_map.channels;
 
 	if (!pa_sample_spec_valid(&spec)) {
 		blog(LOG_ERROR, "Sample spec is not valid");
 		return -1;
 	}
 
-	data->speakers = pulse_channels_to_obs_speakers(spec.channels);
+	data->speakers =
+		pulse_channels_to_obs_speakers(data->channel_map.channels);
 	data->bytes_per_frame = pa_frame_size(&spec);
 
-	pa_channel_map channel_map = pulse_channel_map(data->speakers);
-
 	data->stream = pulse_stream_new(obs_source_get_name(data->source),
-					&spec, &channel_map);
+					&spec, &data->channel_map);
 	if (!data->stream) {
 		blog(LOG_ERROR, "Unable to create stream");
 		return -1;
@@ -459,6 +392,112 @@ skip:
 	pulse_signal(0);
 }
 
+static void init_pa_channels_list(obs_property_t *p)
+{
+	const struct {
+		enum speaker_layout speakers;
+		const char *name;
+	} list[] = {
+		{1, "MONO"},    {2, "STEREO"},  {3, "2POINT1"}, {4, "4POINT0"},
+		{5, "4POINT1"}, {6, "5POINT1"}, {8, "7POINT1"},
+	};
+
+	for (size_t i = 0; i < sizeof(list) / sizeof(*list); i++) {
+		obs_property_list_add_int(p, obs_module_text(list[i].name),
+					  list[i].speakers);
+	}
+}
+
+static void init_pa_map_list(obs_property_t *p)
+{
+	const struct {
+		enum pa_channel_position position;
+		const char *name;
+	} list[] = {
+		{PA_CHANNEL_POSITION_FRONT_LEFT, "FRONT_LEFT"},
+		{PA_CHANNEL_POSITION_FRONT_RIGHT, "FRONT_RIGHT"},
+		{PA_CHANNEL_POSITION_FRONT_CENTER, "FRONT_CENTER"},
+		{PA_CHANNEL_POSITION_LFE, "LFE"},
+		{PA_CHANNEL_POSITION_REAR_LEFT, "REAR_LEFT"},
+		{PA_CHANNEL_POSITION_REAR_RIGHT, "REAR_RIGHT"},
+		{PA_CHANNEL_POSITION_SIDE_LEFT, "SIDE_LEFT"},
+		{PA_CHANNEL_POSITION_SIDE_RIGHT, "SIDE_RIGHT"},
+
+		{PA_CHANNEL_POSITION_MONO, "MONO"},
+
+		{PA_CHANNEL_POSITION_REAR_CENTER, "REAR_CENTER"},
+
+		{PA_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER,
+		 "FRONT_LEFT_OF_CENTER"},
+		{PA_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER,
+		 "FRONT_RIGHT_OF_CENTER"},
+
+		{PA_CHANNEL_POSITION_AUX0, "AUX0"},
+		{PA_CHANNEL_POSITION_AUX1, "AUX1"},
+		{PA_CHANNEL_POSITION_AUX2, "AUX2"},
+		{PA_CHANNEL_POSITION_AUX3, "AUX3"},
+		{PA_CHANNEL_POSITION_AUX4, "AUX4"},
+		{PA_CHANNEL_POSITION_AUX5, "AUX5"},
+		{PA_CHANNEL_POSITION_AUX6, "AUX6"},
+		{PA_CHANNEL_POSITION_AUX7, "AUX7"},
+		{PA_CHANNEL_POSITION_AUX8, "AUX8"},
+		{PA_CHANNEL_POSITION_AUX9, "AUX9"},
+		{PA_CHANNEL_POSITION_AUX10, "AUX10"},
+		{PA_CHANNEL_POSITION_AUX11, "AUX11"},
+		{PA_CHANNEL_POSITION_AUX12, "AUX12"},
+		{PA_CHANNEL_POSITION_AUX13, "AUX13"},
+		{PA_CHANNEL_POSITION_AUX14, "AUX14"},
+		{PA_CHANNEL_POSITION_AUX15, "AUX15"},
+		{PA_CHANNEL_POSITION_AUX16, "AUX16"},
+		{PA_CHANNEL_POSITION_AUX17, "AUX17"},
+		{PA_CHANNEL_POSITION_AUX18, "AUX18"},
+		{PA_CHANNEL_POSITION_AUX19, "AUX19"},
+		{PA_CHANNEL_POSITION_AUX20, "AUX20"},
+		{PA_CHANNEL_POSITION_AUX21, "AUX21"},
+		{PA_CHANNEL_POSITION_AUX22, "AUX22"},
+		{PA_CHANNEL_POSITION_AUX23, "AUX23"},
+		{PA_CHANNEL_POSITION_AUX24, "AUX24"},
+		{PA_CHANNEL_POSITION_AUX25, "AUX25"},
+		{PA_CHANNEL_POSITION_AUX26, "AUX26"},
+		{PA_CHANNEL_POSITION_AUX27, "AUX27"},
+		{PA_CHANNEL_POSITION_AUX28, "AUX28"},
+		{PA_CHANNEL_POSITION_AUX29, "AUX29"},
+		{PA_CHANNEL_POSITION_AUX30, "AUX30"},
+		{PA_CHANNEL_POSITION_AUX31, "AUX31"},
+
+		{PA_CHANNEL_POSITION_TOP_CENTER, "TOP_CENTER"},
+
+		{PA_CHANNEL_POSITION_TOP_FRONT_LEFT, "TOP_FRONT_LEFT"},
+		{PA_CHANNEL_POSITION_TOP_FRONT_RIGHT, "TOP_FRONT_RIGHT"},
+		{PA_CHANNEL_POSITION_TOP_FRONT_CENTER, "TOP_FRONT_CENTER"},
+
+		{PA_CHANNEL_POSITION_TOP_REAR_LEFT, "TOP_REAR_LEFT"},
+		{PA_CHANNEL_POSITION_TOP_REAR_RIGHT, "TOP_REAR_RIGHT"},
+		{PA_CHANNEL_POSITION_TOP_REAR_CENTER, "TOP_REAR_CENTER"},
+	};
+
+	for (size_t i = 0; i < sizeof(list) / sizeof(*list); i++) {
+		obs_property_list_add_int(p, obs_module_text(list[i].name),
+					  (long long)list[i].position);
+	}
+}
+
+static bool channels_changed(obs_properties_t *props, obs_property_t *p,
+			     obs_data_t *settings)
+{
+	UNUSED_PARAMETER(p);
+	size_t pa_channels = obs_data_get_int(settings, "pa_channels");
+
+	for (size_t i = 0; i < PA_CHANNELS_MAX; i++) {
+		char name[16];
+		sprintf(name, "pa_map_%zu", i);
+		obs_property_t *p = obs_properties_get(props, name);
+		obs_property_set_visible(p, i < pa_channels);
+	}
+
+	return true;
+}
+
 /**
  * Get plugin properties
  */
@@ -481,6 +520,22 @@ static obs_properties_t *pulse_properties(bool input)
 	if (count > 0)
 		obs_property_list_insert_string(
 			devices, 0, obs_module_text("Default"), "default");
+
+	obs_property_t *pa_channels = obs_properties_add_list(
+		props, "pa_channels", obs_module_text("PAChannels"),
+		OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	init_pa_channels_list(pa_channels);
+	obs_property_set_modified_callback(pa_channels, channels_changed);
+
+	for (size_t i = 0; i < PA_CHANNELS_MAX; i++) {
+		char name[16], desc[16];
+		sprintf(name, "pa_map_%zu", i);
+		sprintf(desc, "PAMap.%zu", i);
+		obs_property_t *pa_map = obs_properties_add_list(
+			props, name, desc, OBS_COMBO_TYPE_LIST,
+			OBS_COMBO_FORMAT_INT);
+		init_pa_map_list(pa_map);
+	}
 
 	return props;
 }
@@ -505,6 +560,23 @@ static obs_properties_t *pulse_output_properties(void *unused)
 static void pulse_defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "device_id", "default");
+	obs_data_set_default_int(settings, "pa_channels", 2);
+
+	obs_data_set_default_int(settings, "pa_map_0",
+				 PA_CHANNEL_POSITION_FRONT_LEFT);
+	obs_data_set_default_int(settings, "pa_map_1",
+				 PA_CHANNEL_POSITION_FRONT_RIGHT);
+	obs_data_set_default_int(settings, "pa_map_2",
+				 PA_CHANNEL_POSITION_FRONT_CENTER);
+	obs_data_set_default_int(settings, "pa_map_3", PA_CHANNEL_POSITION_LFE);
+	obs_data_set_default_int(settings, "pa_map_4",
+				 PA_CHANNEL_POSITION_REAR_LEFT);
+	obs_data_set_default_int(settings, "pa_map_5",
+				 PA_CHANNEL_POSITION_REAR_RIGHT);
+	obs_data_set_default_int(settings, "pa_map_6",
+				 PA_CHANNEL_POSITION_SIDE_LEFT);
+	obs_data_set_default_int(settings, "pa_map_7",
+				 PA_CHANNEL_POSITION_SIDE_RIGHT);
 }
 
 /**
@@ -541,6 +613,20 @@ static void pulse_destroy(void *vptr)
 	bfree(data);
 }
 
+static bool channel_map_compare(const pa_channel_map *a,
+				const pa_channel_map *b)
+{
+	if (a->channels != b->channels)
+		return true;
+
+	for (uint8_t i = 0; i < a->channels; i++) {
+		if (a->map[i] != b->map[i])
+			return true;
+	}
+
+	return false;
+}
+
 /**
  * Update the input settings
  */
@@ -549,6 +635,7 @@ static void pulse_update(void *vptr, obs_data_t *settings)
 	PULSE_DATA(vptr);
 	bool restart = false;
 	const char *new_device;
+	pa_channel_map new_channel_map;
 
 	new_device = obs_data_get_string(settings, "device_id");
 	if (!data->device || strcmp(data->device, new_device) != 0) {
@@ -556,6 +643,17 @@ static void pulse_update(void *vptr, obs_data_t *settings)
 			bfree(data->device);
 		data->device = bstrdup(new_device);
 		data->is_default = strcmp("default", data->device) == 0;
+		restart = true;
+	}
+
+	new_channel_map.channels = obs_data_get_int(settings, "pa_channels");
+	for (size_t i = 0; i < PA_CHANNELS_MAX; i++) {
+		char name[16];
+		sprintf(name, "pa_map_%zu", i);
+		new_channel_map.map[i] = obs_data_get_int(settings, name);
+	}
+	if (channel_map_compare(&new_channel_map, &data->channel_map)) {
+		data->channel_map = new_channel_map;
 		restart = true;
 	}
 
