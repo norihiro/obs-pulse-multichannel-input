@@ -43,6 +43,10 @@ jobs:
           verbose: true
           qt: ${{ env.qt }}
 
+      - name: Install dependencies
+        run: |
+          sudo apt-get install libpulse-dev
+
       - name: Build plugin
         run: |
           OBS_QT_VERSION_MAJOR=${{ steps.obsdeps.outputs.OBS_QT_VERSION_MAJOR }}
